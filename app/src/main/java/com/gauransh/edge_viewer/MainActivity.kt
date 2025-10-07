@@ -8,24 +8,46 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.gauransh.edge_viewer.databinding.ActivityMainBinding
+import java.nio.ByteBuffer
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var cameraService: CameraService
+    private var outputBuffer: ByteBuffer? = null
+    private lateinit var mainRenderer: MainRenderer
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        // Initialize our camera service
-        cameraService = CameraService(this, binding.textureView)
+        mainRenderer = MainRenderer()
 
-        // Check for camera permission
+        binding.glSurfaceView.apply {
+            setEGLContextClientVersion(2)
+            setRenderer(mainRenderer)
+        }
+
+        cameraService = CameraService(this) { width, height, yBuffer, uBuffer, vBuffer, yStride, uStride, vStride ->
+            if (outputBuffer == null) {
+                outputBuffer = ByteBuffer.allocateDirect(width * height * 4)
+            }
+
+            CVProcessor.processFrame(
+                yBuffer, uBuffer, vBuffer,
+                yStride, uStride, vStride,
+                width, height,
+                outputBuffer!!
+            )
+
+            // Pass the processed buffer to the renderer and request a redraw
+            mainRenderer.updateFrame(width, height, outputBuffer!!)
+            binding.glSurfaceView.requestRender()
+        }
+
         if (allPermissionsGranted()) {
-            cameraService.startCamera() // Start camera if permission is already granted
+            startCameraWithViewSize()
         } else {
             ActivityCompat.requestPermissions(
                 this, REQUIRED_PERMISSIONS, REQUEST_CODE_PERMISSIONS
@@ -33,16 +55,20 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // This function is called after the user responds to the permission request
+    private fun startCameraWithViewSize() {
+        binding.glSurfaceView.post {
+            cameraService.startCamera(binding.glSurfaceView.width, binding.glSurfaceView.height)
+        }
+    }
+
     override fun onRequestPermissionsResult(
         requestCode: Int, permissions: Array<String>, grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == REQUEST_CODE_PERMISSIONS) {
             if (allPermissionsGranted()) {
-                cameraService.startCamera() // Start camera if permission was granted
+                startCameraWithViewSize()
             } else {
-                // If permission is not granted, show a message and close the app
                 Toast.makeText(this, "Permissions not granted by the user.", Toast.LENGTH_SHORT).show()
                 finish()
             }
@@ -50,22 +76,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun allPermissionsGranted() = REQUIRED_PERMISSIONS.all {
-        ContextCompat.checkSelfPermission(
-            baseContext, it
-        ) == PackageManager.PERMISSION_GRANTED
+        ContextCompat.checkSelfPermission(baseContext, it) == PackageManager.PERMISSION_GRANTED
     }
 
-    /**
-     * A native method that is implemented by the 'edge_viewer' native library,
-     * which is packaged with this application.
-     */
     external fun stringFromJNI(): String
 
     companion object {
         private const val REQUEST_CODE_PERMISSIONS = 10
         private val REQUIRED_PERMISSIONS = arrayOf(Manifest.permission.CAMERA)
 
-        // Used to load the 'edge_viewer' library on application startup.
         init {
             System.loadLibrary("edge_viewer")
         }

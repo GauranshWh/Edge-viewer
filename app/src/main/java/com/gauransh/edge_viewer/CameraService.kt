@@ -2,50 +2,47 @@ package com.gauransh.edge_viewer
 
 import android.annotation.SuppressLint
 import android.content.Context
-import android.graphics.SurfaceTexture
+import android.graphics.ImageFormat
 import android.hardware.camera2.*
+import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
 import android.view.Surface
-import android.view.TextureView
 
-/**
- * Manages all camera operations in a separate class to keep MainActivity clean.
- * This class handles opening the camera, creating a preview session, and closing the camera.
- */
-class CameraService(private val context: Context, private val textureView: TextureView) {
+class CameraService(
+    context: Context,
+    private val frameListener: (width: Int, height: Int, yBuffer: java.nio.ByteBuffer, uBuffer: java.nio.ByteBuffer, vBuffer: java.nio.ByteBuffer, yStride: Int, uStride: Int, vStride: Int) -> Unit
+) {
 
     private val cameraManager: CameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
     private var cameraDevice: CameraDevice? = null
     private var captureSession: CameraCaptureSession? = null
 
-    // A background thread to prevent blocking the UI while doing camera work.
     private val cameraThread = HandlerThread("CameraThread").apply { start() }
     private val cameraHandler = Handler(cameraThread.looper)
 
-    /**
-     * Starts the camera process. It waits for the TextureView to be ready, then opens the camera.
-     */
-    fun startCamera() {
-        if (textureView.isAvailable) {
-            openCamera()
-        } else {
-            textureView.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
-                override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
-                    openCamera()
-                }
-                override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) {}
-                override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean = true
-                override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {}
-            }
-        }
+    private lateinit var imageReader: ImageReader
+
+    @SuppressLint("MissingPermission")
+    fun startCamera(width: Int, height: Int) {
+        // Create an ImageReader to capture frames
+        imageReader = ImageReader.newInstance(width, height, ImageFormat.YUV_420_888, 2)
+        imageReader.setOnImageAvailableListener({ reader ->
+            val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
+            // Send the raw plane data to our listener (MainActivity)
+            val planes = image.planes
+            frameListener(
+                image.width, image.height,
+                planes[0].buffer, planes[1].buffer, planes[2].buffer,
+                planes[0].rowStride, planes[1].rowStride, planes[2].rowStride
+            )
+            image.close()
+        }, cameraHandler)
+
+        openCamera()
     }
 
-    /**
-     * Opens a connection to the first available camera.
-     * The result is handled by the deviceStateCallback.
-     */
     @SuppressLint("MissingPermission")
     private fun openCamera() {
         try {
@@ -56,20 +53,15 @@ class CameraService(private val context: Context, private val textureView: Textu
         }
     }
 
-    /**
-     * Callback for camera device state changes (opened, disconnected, error).
-     */
     private val deviceStateCallback = object : CameraDevice.StateCallback() {
         override fun onOpened(camera: CameraDevice) {
             cameraDevice = camera
             createCaptureSession()
         }
-
         override fun onDisconnected(camera: CameraDevice) {
             camera.close()
             cameraDevice = null
         }
-
         override fun onError(camera: CameraDevice, error: Int) {
             camera.close()
             cameraDevice = null
@@ -77,33 +69,19 @@ class CameraService(private val context: Context, private val textureView: Textu
         }
     }
 
-    /**
-     * Creates a new camera capture session for the preview.
-     */
     private fun createCaptureSession() {
         try {
-            val texture = textureView.surfaceTexture ?: return
-            // We'll use a standard preview size. This can be configured more dynamically later.
-            texture.setDefaultBufferSize(1920, 1080)
-            val surface = Surface(texture)
-
-            // Create a request builder for a repeating preview request.
+            // The target for the camera is now the ImageReader's surface
+            val surface = imageReader.surface
             val captureRequestBuilder = cameraDevice!!.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
             captureRequestBuilder.addTarget(surface)
 
-            // Create the session. The result is handled by the session state callback.
             cameraDevice?.createCaptureSession(listOf(surface), object : CameraCaptureSession.StateCallback() {
                 override fun onConfigured(session: CameraCaptureSession) {
                     captureSession = session
                     captureRequestBuilder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
-                    try {
-                        // Start the continuous preview.
-                        session.setRepeatingRequest(captureRequestBuilder.build(), null, cameraHandler)
-                    } catch (e: CameraAccessException) {
-                        Log.e(TAG, "Failed to start camera preview.", e)
-                    }
+                    session.setRepeatingRequest(captureRequestBuilder.build(), null, cameraHandler)
                 }
-
                 override fun onConfigureFailed(session: CameraCaptureSession) {
                     Log.e(TAG, "Failed to configure camera session.")
                 }
@@ -113,18 +91,13 @@ class CameraService(private val context: Context, private val textureView: Textu
         }
     }
 
-    /**
-     * Closes camera resources to release them for other apps.
-     */
     fun closeCamera() {
         captureSession?.close()
-        captureSession = null
         cameraDevice?.close()
-        cameraDevice = null
+        imageReader.close()
     }
 
     companion object {
         private const val TAG = "CameraService"
     }
 }
-
