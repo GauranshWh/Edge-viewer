@@ -9,6 +9,7 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.gauransh.edge_viewer.databinding.ActivityMainBinding
 import java.nio.ByteBuffer
+import java.util.concurrent.TimeUnit
 
 class MainActivity : AppCompatActivity() {
 
@@ -16,6 +17,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var cameraService: CameraService
     private var outputBuffer: ByteBuffer? = null
     private lateinit var mainRenderer: MainRenderer
+
+    // For FPS calculation
+    private var frameCount = 0
+    private var lastFpsTimestamp = 0L
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -41,9 +46,10 @@ class MainActivity : AppCompatActivity() {
                 outputBuffer!!
             )
 
-            // Pass the processed buffer to the renderer and request a redraw
             mainRenderer.updateFrame(width, height, outputBuffer!!)
             binding.glSurfaceView.requestRender()
+
+            calculateFps(width, height)
         }
 
         if (allPermissionsGranted()) {
@@ -52,6 +58,26 @@ class MainActivity : AppCompatActivity() {
             ActivityCompat.requestPermissions(
                 this, REQUIRED_PERMISSIONS, REQUEST_CODE_PERMISSIONS
             )
+        }
+    }
+
+    private fun calculateFps(width: Int, height: Int) {
+        frameCount++
+        val currentTime = System.nanoTime()
+        if (lastFpsTimestamp == 0L) {
+            lastFpsTimestamp = currentTime
+        }
+        val elapsedTime = currentTime - lastFpsTimestamp
+        if (elapsedTime >= TimeUnit.SECONDS.toNanos(1)) {
+            val fps = frameCount / (elapsedTime / 1_000_000_000.0)
+            val statsText = "$width x $height @ ${"%.1f".format(fps)} FPS"
+
+            runOnUiThread {
+                binding.statsTextView.text = statsText
+            }
+
+            frameCount = 0
+            lastFpsTimestamp = currentTime
         }
     }
 
